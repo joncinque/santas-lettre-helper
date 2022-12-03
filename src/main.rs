@@ -1,6 +1,9 @@
 use {
-    clap::{App, Arg},
-    lettre::{AsyncSendmailTransport, AsyncTransport, Message, transport::stub::StubTransport, Tokio1Executor},
+    clap::{Arg, ArgAction, Command},
+    lettre::{
+        transport::stub::AsyncStubTransport, AsyncSendmailTransport, AsyncTransport, Message,
+        Tokio1Executor,
+    },
     rand::prelude::*,
     std::{collections::HashMap, error::Error},
 };
@@ -31,43 +34,42 @@ fn assign_santas<'a>(mut participants: Vec<(Name<'a>, Email<'a>)>) -> HashMap<(N
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let matches = App::new("Santa's Lettre Helper")
+    let matches = Command::new("Santa's Lettre Helper")
         .version("0.1")
         .about("Match up people for Secret Santa, and send out an email to everyone!")
         .arg(
-            Arg::with_name("test")
-                .short("t")
+            Arg::new("test")
+                .short('t')
                 .long("test")
                 .help("Test mode, doesn't actually send emails")
-                .takes_value(false)
+                .action(ArgAction::SetTrue)
         )
         .arg(
-            Arg::with_name("reply_to")
-                .short("r")
+            Arg::new("reply_to")
+                .short('r')
                 .long("reply-to")
                 .help("Sets the reply email file to use"),
         )
         .arg(
-            Arg::with_name("from")
+            Arg::new("from")
                 .value_name("FROM_EMAIL")
                 .help("Sets the from email address")
                 .required(true)
-                .takes_value(true),
         )
         .arg(
-            Arg::with_name("participant")
+            Arg::new("participant")
                 .value_name("NAME:EMAIL")
                 .help(
                     "Specifies a participant as their name and email, separated with a ':', e.g. Santa:santa@northpole.com",
                 )
                 .required(true)
-                .multiple(true),
+                .action(ArgAction::Append),
         )
         .get_matches();
-    let from = matches.value_of("from").unwrap_or(FROM_EMAIL);
-    let reply_to = matches.value_of("reply_to").unwrap_or(from);
+    let from = matches.get_one::<&str>("from").unwrap_or(&FROM_EMAIL);
+    let reply_to = matches.get_one::<&str>("reply_to").unwrap_or(from);
     let participants: Vec<(Name, Email)> = matches
-        .values_of("participant")
+        .get_many::<&str>("participant")
         .unwrap()
         .map(|p| p.split_once(':').unwrap())
         .collect();
@@ -84,8 +86,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 santa.0, recipient
             ))?;
         // types are gross, we can probably do this better some other time
-        if matches.is_present("test") {
-            let sender = StubTransport::new_ok();
+        if matches.get_flag("test") {
+            let sender = AsyncStubTransport::new_ok();
             let result = sender.send(email).await;
             assert!(result.is_ok());
         } else {
