@@ -113,15 +113,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap()
         .map(|p| p.split_once(':').unwrap())
         .collect();
-    let mut avoids = HashMap::new();
-    matches
+    let avoids: HashMap<Name, Name> = matches
         .get_many::<String>("avoid")
         .unwrap_or_default()
-        .for_each(|p| {
-            let (a, b) = p.split_once(':').unwrap();
-            avoids.insert(a, b);
-            avoids.insert(b, a);
-        });
+        .map(|p| p.split_once(':').unwrap())
+        .collect();
     let santas = assign_santas(participants, &avoids);
 
     for (santa, (email, recipient)) in santas {
