@@ -8,28 +8,58 @@ use {
     std::{collections::HashMap, error::Error},
 };
 
-const FROM_EMAIL: &str = "Secret Santa";
+const FROM_EMAIL: &str = "secret@santa.holiday";
 
 type Email<'a> = &'a str;
 type Name<'a> = &'a str;
 
-fn assign_santas<'a>(mut participants: Vec<(Name<'a>, Email<'a>)>) -> HashMap<Name, (Email, Name)> {
-    let mut santas = HashMap::<Name, (Email, Name)>::new();
-    let mut unassigned_santas = participants.clone();
+fn valid_santa_for_participant(
+    santa: Name,
+    participant: Name,
+    santas: &HashMap<Name, (Email, Name)>,
+    avoids: &HashMap<Name, Name>,
+) -> bool {
+    santa != participant
+        && santas.get(participant).map(|s| s.1) != Some(santa)
+        && avoids.get(participant) != Some(&santa)
+}
 
+fn try_assign_santas<'a, 'b>(
+    participants: &'b [(Name<'a>, Email<'a>)],
+    avoids: &'b HashMap<Name<'a>, Name<'a>>,
+) -> Result<HashMap<Name<'a>, (Email<'a>, Name<'a>)>, Box<dyn Error>> {
+    let mut santas = HashMap::<Name, (Email, Name)>::new();
+    let mut unassigned_santas = participants.to_vec().clone();
+    let mut rng = rand::thread_rng();
+    for participant in participants.iter() {
+        unassigned_santas.shuffle(&mut rng);
+        if let Some(santa) = unassigned_santas
+            .iter()
+            .find(|&&x| valid_santa_for_participant(x.0, participant.0, &santas, avoids))
+        {
+            let santa = *santa;
+            unassigned_santas.retain(|&s| s.0 != santa.0);
+            println!("{} gives a gift to {}", santa.0, participant.0);
+            santas.insert(santa.0, (santa.1, participant.0));
+        } else {
+            return Err("Could not resolve santas".into());
+        }
+    }
+    Ok(santas)
+}
+
+fn assign_santas<'a>(
+    mut participants: Vec<(Name<'a>, Email<'a>)>,
+    avoids: &HashMap<Name<'a>, Name<'a>>,
+) -> HashMap<Name<'a>, (Email<'a>, Name<'a>)> {
     let mut rng = rand::thread_rng();
     participants.shuffle(&mut rng);
-    for participant in participants.iter() {
-        let mut santa = *unassigned_santas.choose(&mut rng).unwrap();
-        while santa.0 == participant.0 || santas.get(participant.0).map(|s| s.1) == Some(&santa.0) {
-            santa = *unassigned_santas.choose(&mut rng).unwrap();
+    loop {
+        match try_assign_santas(&participants, avoids) {
+            Ok(santas) => return santas,
+            Err(err) => eprintln!("Assign: {}", err),
         }
-
-        unassigned_santas.retain(|&s| s.0 != santa.0);
-        println!("{} gives a gift to {}", santa.0, participant.0);
-        santas.insert(santa.0, (santa.1, participant.0));
     }
-    santas
 }
 
 #[tokio::main]
@@ -52,9 +82,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .arg(
             Arg::new("from")
+                .long("from")
                 .value_name("FROM_EMAIL")
                 .help("Sets the from email address")
-                .required(true)
+                .default_value(FROM_EMAIL)
+        )
+        .arg(
+            Arg::new("avoid")
+                .long("avoid")
+                .value_name("NAME:NAME")
+                .help(
+                    "Specifies two participants to *not* match as their two names, separated with a ':', e.g. Santa:Elf",
+                )
+                .action(ArgAction::Append),
         )
         .arg(
             Arg::new("participant")
@@ -66,14 +106,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .action(ArgAction::Append),
         )
         .get_matches();
-    let from = matches.get_one::<&str>("from").unwrap_or(&FROM_EMAIL);
-    let reply_to = matches.get_one::<&str>("reply_to").unwrap_or(from);
+    let from = matches.get_one::<String>("from").unwrap();
+    let reply_to = matches.get_one::<String>("reply_to").unwrap_or(from);
     let participants: Vec<(Name, Email)> = matches
-        .get_many::<&str>("participant")
+        .get_many::<String>("participant")
         .unwrap()
         .map(|p| p.split_once(':').unwrap())
         .collect();
-    let santas = assign_santas(participants);
+    let mut avoids = HashMap::new();
+    matches
+        .get_many::<String>("avoid")
+        .unwrap_or_default()
+        .for_each(|p| {
+            let (a, b) = p.split_once(':').unwrap();
+            avoids.insert(a, b);
+            avoids.insert(b, a);
+        });
+    let santas = assign_santas(participants, &avoids);
 
     for (santa, (email, recipient)) in santas {
         let email = Message::builder()
@@ -86,22 +135,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 santa, recipient
             ))?;
         // types are gross, we can probably do this better some other time
-        if matches.get_flag("test") {
+        let send_ok = if matches.get_flag("test") {
             let sender = AsyncStubTransport::new_ok();
-            let result = sender.send(email).await;
-            assert!(result.is_ok());
+            sender.send(email).await.is_ok()
         } else {
             let sender = AsyncSendmailTransport::<Tokio1Executor>::new();
-            let result = sender.send(email).await;
-            assert!(result.is_ok());
+            sender.send(email).await.is_ok()
         };
+        assert!(send_ok);
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod test {
-    use crate::assign_santas;
+    use super::*;
 
     #[test]
     fn success_assign() {
@@ -115,10 +163,25 @@ mod test {
             ("7", ""),
             ("8", ""),
         ];
-        let santas = assign_santas(participants);
-        for (santa, (_, recipient)) in &santas {
-            let recipient_of_recipient = &santas.get(recipient).unwrap().1;
-            assert_ne!(santa, recipient_of_recipient);
+        let avoids = [
+            ("1", "2"),
+            ("2", "1"),
+            ("3", "4"),
+            ("4", "3"),
+            ("5", "6"),
+            ("6", "5"),
+            ("7", "8"),
+            ("8", "7"),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+        for _ in 1..1_000 {
+            let santas = assign_santas(participants.clone(), &avoids);
+            for (santa, (_, recipient)) in &santas {
+                let recipient_of_recipient = &santas.get(recipient).unwrap().1;
+                assert_ne!(santa, recipient_of_recipient);
+                assert!(avoids.get(santa) != Some(recipient));
+            }
         }
     }
 }
