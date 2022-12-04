@@ -21,7 +21,7 @@ fn valid_santa_for_participant(
 ) -> bool {
     santa != participant
         && santas.get(participant).map(|s| s.1) != Some(santa)
-        && avoids.get(participant) != Some(&santa)
+        && avoids.get(santa) != Some(&participant)
 }
 
 fn try_assign_santas<'a, 'b>(
@@ -159,18 +159,9 @@ mod test {
             ("7", ""),
             ("8", ""),
         ];
-        let avoids = [
-            ("1", "2"),
-            ("2", "1"),
-            ("3", "4"),
-            ("4", "3"),
-            ("5", "6"),
-            ("6", "5"),
-            ("7", "8"),
-            ("8", "7"),
-        ]
-        .into_iter()
-        .collect::<HashMap<_, _>>();
+        let avoids = [("1", "2"), ("3", "4"), ("5", "6"), ("7", "8")]
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         for _ in 1..1_000 {
             let santas = assign_santas(participants.clone(), &avoids);
             for (santa, (_, recipient)) in &santas {
